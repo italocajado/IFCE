@@ -7,6 +7,7 @@ n_canais = 0
 hospedes = []
 canal_semaforos = []
 controle_remoto = threading.Semaphore(1)
+canal_atual = None
 
 def criar_hospede():
     global n_canais
@@ -34,17 +35,33 @@ class Hospede:
         self.status = "Descansando"
     
     def iniciar_atividade(self):
+        global canal_atual
         while True:
             self.status = "Descansando"
             atualizar_interface(self)
             time.sleep(self.tempo_descansando)
             
-            self.status = "Assistindo TV"
+            with controle_remoto:
+
+                #Nenhum canal
+                if canal_atual is None:
+                    canal_atual = self.canal
+                    self.status = 'Assistindo TV'
+
+                #canal ja em uso por outro usuario
+                elif canal_atual == self.canal:
+                    self.status = 'Assistindo TV'
+
+                #status: descansando    
+                else:
+                    self.status = 'Dormindo (bloqueado)'
+                    atualizar_interface(self)
+                    continue
             atualizar_interface(self)
-            with canal_semaforos[self.canal - 1]:
-                self.status = "Assistindo TV (Canal Bloqueado)"
-                atualizar_interface(self)
-                time.sleep(self.tempo_assistindo)
+            time.sleep(self.tempo_assistindo)
+            with controle_remoto:
+                if canal_atual == self.canal:
+                    canal_atual = None
 
     def __str__(self):
         return f"ID: {self.id_hospede}, Canal: {self.canal}, Assistindo: {self.tempo_assistindo}s, Descansando: {self.tempo_descansando}s"

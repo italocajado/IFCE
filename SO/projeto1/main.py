@@ -56,9 +56,10 @@ class Hospede:
                 else:
                     self.status = 'Dormindo (bloqueado)'
                     atualizar_interface(self)
-                    continue
+
             atualizar_interface(self)
             time.sleep(self.tempo_assistindo)
+
             with controle_remoto:
                 if canal_atual == self.canal:
                     canal_atual = None

@@ -1,13 +1,15 @@
 import threading
-import time
 import tkinter as tk
 from tkinter import messagebox
 
 n_canais = 0
 hospedes = []
 canal_semaforos = []
+espec_por_canal = {}
+hospede_indice = {}
 controle_remoto = threading.Semaphore(1)
-canal_atual = None
+canal_em_uso = None
+canal_lock = threading.Lock()
 
 def criar_hospede():
     global n_canais
@@ -15,70 +17,104 @@ def criar_hospede():
     canal = int(entry_canal.get())
     tempo_assistindo = int(entry_ttv.get())
     tempo_descansando = int(entry_td.get())
-    
+
     if canal < 1 or canal > n_canais:
         messagebox.showerror("Erro", f"Canal inválido. Escolha entre 1 e {n_canais}.")
         return
-    
+
+    for hospede in hospedes:
+        if hospede.id_hospede == id_hospede:
+            messagebox.showerror("Erro", f"{id_hospede} já existe.")
+            return
+
     hospede = Hospede(id_hospede, canal, tempo_assistindo, tempo_descansando)
     hospedes.append(hospede)
-    threading.Thread(target=hospede.iniciar_atividade).start()
-    
-    listbox_hospedes.insert(tk.END, f"Hóspede {id_hospede} no Canal {canal}")
+    index = listbox_hospedes.size()
+    hospede_indice[id_hospede] = index
+    listbox_hospedes.insert(tk.END, f"Hóspede {id_hospede} - Canal {canal} - Status: {hospede.status}")
+    hospede.start()
 
-class Hospede:
+class Hospede(threading.Thread):
     def __init__(self, id_hospede, canal, tempo_assistindo, tempo_descansando):
+        super().__init__()
         self.id_hospede = id_hospede
         self.canal = canal
         self.tempo_assistindo = tempo_assistindo
         self.tempo_descansando = tempo_descansando
         self.status = "Descansando"
+        self.ativo = True
+    
+    def run(self):
+        while self.ativo:
+            self.descansar()
+            self.tentar_assistir()
     
     def iniciar_atividade(self):
-        global canal_atual
-        while True:
-            self.status = "Descansando"
-            atualizar_interface(self)
-            time.sleep(self.tempo_descansando)
-            
-            with controle_remoto:
+        self.descansar()
 
-                #Nenhum canal
-                if canal_atual is None:
-                    canal_atual = self.canal
-                    self.status = 'Assistindo TV'
+    def descansar(self):
+        self.status = "Descansando"
+        atualizar_interface(self)
+        self.timer = threading.Timer(self.tempo_descansando, self.tentar_assistir)
+        self.timer.start()
 
-                #canal ja em uso por outro usuario
-                elif canal_atual == self.canal:
-                    self.status = 'Assistindo TV'
+    def tentar_assistir(self):
+        global canal_em_uso
+        
+        canal_semaforo = canal_semaforos[self.canal - 1]
 
-                #status: descansando    
+        with controle_remoto:
+            if canal_em_uso is None or canal_em_uso == self.canal:
+                if canal_semaforo.acquire(blocking=False):  
+                    canal_em_uso = self.canal
+                    self.assistir(canal_semaforo)
                 else:
-                    self.status = 'Dormindo (bloqueado)'
+                    self.status = "Bloqueado"
                     atualizar_interface(self)
+                    self.timer = threading.Timer(1, self.tentar_assistir)
+                    self.timer.start()
+            else:
+                self.status = "Bloqueado"
+                atualizar_interface(self)
+                self.timer = threading.Timer(1, self.tentar_assistir)
+                self.timer.start()
+        
+                
+    def assistir(self, canal_semaforo):
+        with canal_lock:
+            espec_por_canal[self.canal] += 1
+            self.status = "Assistindo TV"
+        atualizar_interface(self)
 
-            atualizar_interface(self)
-            time.sleep(self.tempo_assistindo)
+        self.timer = threading.Timer(self.tempo_assistindo, self.finalizar_assistir, args=[canal_semaforo])
+        self.timer.start()
 
-            with controle_remoto:
-                if canal_atual == self.canal:
-                    canal_atual = None
+    def finalizar_assistir(self, canal_semaforo):
+        global canal_em_uso
+        
+        with canal_lock:
+            espec_por_canal[self.canal] -= 1
+            if espec_por_canal[self.canal] == 0:
+                canal_em_uso = None
+        canal_semaforo.release()
+        self.descansar()
 
-    def __str__(self):
-        return f"ID: {self.id_hospede}, Canal: {self.canal}, Assistindo: {self.tempo_assistindo}s, Descansando: {self.tempo_descansando}s"
-    
+indice_lock = threading.Lock()       
 def atualizar_interface(hospede):
-    for i in range(listbox_hospedes.size()):
-        if listbox_hospedes.get(i).startswith(f"Hóspede {hospede.id_hospede}"):
-            listbox_hospedes.delete(i)
-            listbox_hospedes.insert(i, f"Hóspede {hospede.id_hospede} - Canal {hospede.canal} - Status: {hospede.status}")
-            break
+    with indice_lock:
+        if hospede.id_hospede not in hospede_indice:
+            return
+    
+        index = hospede_indice[hospede.id_hospede]
+        listbox_hospedes.delete(index)
+        listbox_hospedes.insert(index, f"Hóspede {hospede.id_hospede} - Canal {hospede.canal} - Status: {hospede.status}")
+
 
 def inicializar_semaforos():
-    global n_canais
+    global n_canais, canal_semaforos, espec_por_canal
     n_canais = int(entry_n_canais.get())
-    for _ in range(n_canais):
-        canal_semaforos.append(threading.Semaphore(1))
+    canal_semaforos = [threading.Semaphore(n_canais) for _ in range(n_canais)]
+    espec_por_canal = {i+1: 0 for i in range(n_canais)}
 
 def iniciar_programa():
     inicializar_semaforos()

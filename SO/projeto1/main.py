@@ -7,7 +7,6 @@ hospedes = []
 canal_semaforos = []
 espec_por_canal = {}
 hospede_indice = {}
-controle_remoto = threading.Semaphore(1)
 canal_em_uso = None
 canal_lock = threading.Lock()
 
@@ -48,56 +47,48 @@ class Hospede(threading.Thread):
         while self.ativo:
             self.descansar()
             self.tentar_assistir()
-    
-    def iniciar_atividade(self):
-        self.descansar()
 
     def descansar(self):
         self.status = "Descansando"
         atualizar_interface(self)
-        self.timer = threading.Timer(self.tempo_descansando, self.tentar_assistir)
-        self.timer.start()
-
+        threading.Event().wait(self.tempo_descansando)
+        
     def tentar_assistir(self):
         global canal_em_uso
-        
         canal_semaforo = canal_semaforos[self.canal - 1]
-
-        with controle_remoto:
-            if canal_em_uso is None or canal_em_uso == self.canal:
-                if canal_semaforo.acquire(blocking=False):  
-                    canal_em_uso = self.canal
-                    self.assistir(canal_semaforo)
-                else:
-                    self.status = "Bloqueado"
-                    atualizar_interface(self)
-                    self.timer = threading.Timer(1, self.tentar_assistir)
-                    self.timer.start()
-            else:
-                self.status = "Bloqueado"
-                atualizar_interface(self)
-                self.timer = threading.Timer(1, self.tentar_assistir)
-                self.timer.start()
         
-                
-    def assistir(self, canal_semaforo):
+        self.status = "Bloqueado"
+        atualizar_interface(self)
+
+        with canal_lock:
+            if canal_em_uso is None or canal_em_uso == self.canal:
+                canal_em_uso = self.canal
+            else:
+                self.status = 'Bloqueado'
+                atualizar_interface(self)
+                threading.Event().wait(1)
+                return
+            
+        canal_semaforo.acquire()
+        try:
+            self.assistir()
+        finally:
+            canal_semaforo.release()
+        
+        with canal_lock:
+            if espec_por_canal[self.canal] == 0:
+                canal_em_uso = None
+        
+    def assistir(self):
         with canal_lock:
             espec_por_canal[self.canal] += 1
             self.status = "Assistindo TV"
         atualizar_interface(self)
 
-        self.timer = threading.Timer(self.tempo_assistindo, self.finalizar_assistir, args=[canal_semaforo])
-        self.timer.start()
-
-    def finalizar_assistir(self, canal_semaforo):
-        global canal_em_uso
+        threading.Event().wait(self.tempo_assistindo)
         
         with canal_lock:
             espec_por_canal[self.canal] -= 1
-            if espec_por_canal[self.canal] == 0:
-                canal_em_uso = None
-        canal_semaforo.release()
-        self.descansar()
 
 indice_lock = threading.Lock()       
 def atualizar_interface(hospede):
@@ -108,12 +99,13 @@ def atualizar_interface(hospede):
         index = hospede_indice[hospede.id_hospede]
         listbox_hospedes.delete(index)
         listbox_hospedes.insert(index, f"Hóspede {hospede.id_hospede} - Canal {hospede.canal} - Status: {hospede.status}")
+        root.update_idletasks()
 
 
 def inicializar_semaforos():
     global n_canais, canal_semaforos, espec_por_canal
     n_canais = int(entry_n_canais.get())
-    canal_semaforos = [threading.Semaphore(n_canais) for _ in range(n_canais)]
+    canal_semaforos = [threading.Semaphore(n_canais) for _ in range(n_canais)]  # Apenas um hóspede por canal
     espec_por_canal = {i+1: 0 for i in range(n_canais)}
 
 def iniciar_programa():
